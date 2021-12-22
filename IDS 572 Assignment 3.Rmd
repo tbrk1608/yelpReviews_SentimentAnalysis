@@ -1,0 +1,698 @@
+---
+title: "Yelp Reviews Text Mining and Analysis"
+author: "Vamsy Tammineedi"
+date: "11/5/2021"
+output:
+  html_document:
+    df_print: paged
+  pdf_document: default
+---
+
+```{r setup, include=FALSE} 
+knitr::opts_chunk$set(warning = FALSE, message = FALSE,echo = FALSE)
+```   
+
+```{r, import_libraries, results = 'hide'}
+library(dplyr)
+library(ggplot2)
+library(tidytext)
+library(stringr)
+library(gridExtra)
+library(textstem)
+library(textdata)
+library(tidyr)
+library(caret)
+library(SnowballC)
+library(tidyverse)
+library(e1071) 
+library(ranger)
+library(rsample)
+library(pROC)
+library(magrittr)
+```
+
+## Data Exploration: 
+
+```{r, read_data,results = 'hide'}
+path = "C:\\Users\\krish\\Github\\YelpReview_SentimentAnalysis\\yelpRestaurantReviews_sample_s21b.csv"
+df = read.csv2(path)
+glimpse(df)
+
+```
+
+Star ratings will be used here to indicate the sentiment label. For binary classification, we will convert the 1-5 scale rating values to {positive(1), negative(0)} values.
+
+(More details on the data are available from https://www.yelp.com/dataset)
+
+The actual data in the above website is given in multiple json files. The reviews data file contains the reviews and includes reviewID, businessID, businessName, the review text, star rating and other attributes. The business data file contains the businessName, businessID, address, categories (restaurants, beauty and salon, food, fitness, local services, etc.), various attributes of the business (free wifi, wheelchair access, parking, smoking allowed, operating hours, … etc).
+
+We will consider a pre-processed data set which contains the business type, review text, star rating, and how many users found this review to be cool, funny, useful. There are ~ 40K rows in the pre-processed file.
+
+
+### Distribution of star ratings
+
+```{r,results = 'hide'}
+head(df)
+
+#How are star ratings distributed?
+tbl <- df %>% group_by(starsReview) %>% count() %>% ungroup() %>% mutate(per=`n`/sum(`n`)) %>% arrange(desc(starsReview))
+
+tbl$label <- paste(round(tbl$per*100,2),"%")
+
+ggplot(data=tbl)+geom_bar(aes(x="", y=per, fill=starsReview), stat="identity", width = 1)+ coord_polar("y",start=0)+geom_text(aes(x=1, y = cumsum(per) - per/2, label=label),color="white") + xlab("")+ylab("")+ggtitle("Distribution of Ratings in the data")
+```
+
+
+```{r,results = 'hide',fig.show='hide'}
+df %>% group_by(state) %>% tally()
+```
+
+From the histogram, we can see that the number of reviews is increasing from star rating 1 to 5. Star ratings 4 and 5 account for most of the total reviews - 64.56%, while the star ratings 1,2, and 3 account for remaining with almost the same proportion each.
+
+```{r,fig.height = 6, fig.width = 6,results = 'hide'}
+ggplot(df, aes(x = starsReview)) + geom_bar() + geom_text(stat='count', aes(label=..count..), vjust=-1)
+#Most of the reviews are 5 star, almost 38%
+
+ggplot(df, aes(x=state)) + geom_bar() + geom_text(stat='count', aes(label=..count..), vjust=-1)
+```
+
+We observe that most of the reviews are from Arizona, Nevada and the least reviews are from South Carolina, Illinois with less than 500 reviews. Below histogram shows distribution of reviews from different states
+
+
+```{r,results = 'hide',fig.show='hide'}
+#1,2 : Negative
+#4,5 : Positive
+
+rrData <- df %>% filter(str_detect(postal_code, "^[0-9]{1,5}"))
+
+#tokenize the text of the reviews in the column named 'text'
+rrTokens <- rrData %>% unnest_tokens(word, text)
+rrTokens %>% distinct(word) %>% dim()
+
+#remove stopwords
+rrTokens <- rrTokens %>% anti_join(stop_words)
+rrTokens %>% distinct(word) %>% dim()
+
+
+#lets remove the words which are not present in at least 10 reviews
+rareWords <-rrTokens %>% count(word, sort=TRUE) %>% filter(n<10)
+rareWords %>% distinct(word) %>% dim()
+rrTokens<-anti_join(rrTokens, rareWords) %>% filter(str_detect(word,"[0-9]")==FALSE)
+
+#Term-frequency, tf-idf
+rrTokens<-rrTokens %>%  mutate(word = textstem::lemmatize_words(word))
+
+rrTokens<-rrTokens %>% filter(str_length(word)>=3 & str_length(word)<=15)
+
+rrTokens<- rrTokens %>% group_by(review_id, starsReview) %>% count(word)
+
+rrTokens<-rrTokens %>% bind_tf_idf(word, review_id, n)
+```
+
+Lets see the usage of words in different star ratings. We observed that words like “love”,”delicious”, “amaze”, “nice”,”friendly”,”pretty” ….etc are most used in 5,4-star ratings which show positive emotion.
+
+##### Top words in 5-star reviews
+
+```{r}
+#Which words are related to higher/lower star raings in general
+rrTokens %>% filter(starsReview==5) %>% filter(!word %in% c('food', 'time', 'restaurant', 'service')) %>% group_by(word) %>% count(word, sort=TRUE)
+```
+
+##### Top words in 4-star reviews
+
+```{r}
+rrTokens%>% filter(starsReview==4) %>% filter(!word %in% c('food', 'time', 'restaurant', 'service')) %>% group_by(word) %>% count(word, sort=TRUE)
+```
+
+##### Top words in 3-star reviews
+
+```{r}
+rrTokens%>% filter(starsReview==3) %>% filter(!word %in% c('food', 'time', 'restaurant', 'service')) %>% group_by(word) %>% count(word, sort=TRUE)
+```
+
+##### Top words in 2-star reviews
+
+```{r}
+rrTokens%>% filter(starsReview==2) %>% filter(!word %in% c('food', 'time', 'restaurant', 'service')) %>% group_by(word) %>% count(word, sort=TRUE)
+```
+
+##### Top words in 1-star reviews
+
+```{r}
+rrTokens%>% filter(starsReview==1) %>% filter(!word %in% c('food', 'time', 'restaurant', 'service')) %>% group_by(word) %>% count(word, sort=TRUE)
+```
+
+Here is the final data frame with lemmetized words, term-frequency and inverse term-frequencies calculated
+
+```{r}
+head(rrTokens)
+```
+
+Users on Yelp can vote a review as either funny, useful, or cool. Lets see the distribution of ratings across different vote categories. Below plot shows number of votes vs star ratings for each voting category.
+
+```{r}
+p <- list()
+p[[1]] <- ggplot(df, aes(x=funny , y=starsReview)) +geom_point() + ggtitle(paste("For funny"))
+p[[2]] <- ggplot(df, aes(x=cool , y=starsReview)) +geom_point() + ggtitle(paste("For cool"))
+p[[3]] <- ggplot(df, aes(x=useful , y=starsReview)) +geom_point() + ggtitle(paste("For useful"))
+do.call(grid.arrange,p)
+```
+
+From the above plot, we can see a few reviews from star rating 3,4 have high votes for funny, cool, useful reviews. Now let’s see the average votes for each across star ratings.
+
+```{r,results = 'hide',fig.show='hide'}
+p <- list()
+p[[1]] <- ggplot(df, aes(x= useful, y=funny)) +geom_point()
+p[[2]] <- ggplot(df, aes(x= useful, y=cool)) +geom_point()
+p[[3]] <- ggplot(df, aes(x= cool, y=funny)) +geom_point()
+do.call(grid.arrange,p)
+```
+
+The first line graph shows the average funny votes across star ratings and can be seen that low star ratings have funny comments. This could be because users tend to give sarcastic reviews when they hate the restaurant.  So, funny reviews are associated with negative sentiment.
+
+```{r}
+ggplot(df %>% group_by(starsReview) %>% summarize(AvgFunny_votes = mean(funny))) + aes(x=starsReview, y=AvgFunny_votes, fill=starsReview) + geom_line() + xlab("starsReview") + ylab("Average of Funny Votes")
+
+ggplot(df %>% group_by(starsReview) %>% summarize(AvgCool_votes = mean(cool))) + aes(x=starsReview, y=AvgCool_votes, fill=starsReview) + geom_line() + xlab("starsReview") + ylab("Average of Cool Votes")
+
+ggplot(df %>% group_by(starsReview) %>% summarize(AvgUseful_votes = mean(useful))) + aes(x=starsReview, y=AvgUseful_votes, fill=starsReview) + geom_line() + xlab("starsReview") + ylab("Average of Useful Votes")
+```
+
+The second line graph shows the average cool votes across star ratings and can be seen that as the number of stars increases the cool comments increase but again decreases with a 5-star rating. 
+
+The third line graph shows the average useful votes across star ratings and low star rating reviews are voted useful when compared to high star ratings. This is expected because most of the high star ratings will have common reviews like – Food is good, served on time, and reviews about maintenance and ambiance which most of the users don’t find useful. 
+
+Now lets see how does star ratings for reviews relate to the star-rating given in the dataset for business
+
+```{r fig.height = 8, fig.width = 8}
+#How does star ratings for reviews relate to the star-rating given in the dataset for business (attribute ‘businessStars’)?
+
+p <- list()
+i <- 1
+for (r in c(1.5,2,2.5,3,3.5,4,4.5,5)){
+  tbl_ = df[df$starsBusiness==r,]
+  p[[i]] <- ggplot(tbl_, aes(x = starsReview)) + geom_bar() + ggtitle(paste("starsBusiness:",r))
+  i <- i+1
+}
+do.call(grid.arrange,p)
+  
+```
+
+In the above plot we can see that for starsBusiness rating of 1.5 most of the reviews are of 1-star and as the starsBusiness ratings increase the positive reviews keep increasing. Restaurants with starsBusiness rating > 4 are doing good with most of the ratings being 4,5-star. 
+
+
+Words like “food”, “service”, “time” and “restaurant” are common in all the reviews so lets remove them and after eliminating them we have obtained the below graph which depicts the proportion of top wprds in each review.
+
+```{r fig.height =9, fig.width =9,results='hide'}
+
+tbl2<-rrTokens%>% group_by(starsReview) %>% count(word, sort=TRUE) %>% mutate(prop=n/sum(n))
+
+xx<- tbl2 %>% group_by(word) %>% summarise(totWS=sum(starsReview*prop))
+
+xx %>% top_n(20)
+xx %>% top_n(-100)
+
+
+tbl2 %>% filter(!word %in% c('food', 'time', 'restaurant', 'service')) %>% group_by(starsReview) %>% arrange(starsReview, desc(prop))%>% filter(row_number()<=20) %>% ggplot(aes(word, prop))+geom_col()+coord_flip()+facet_wrap((~starsReview))
+```
+
+In the above figure we can see that for 5 star rating the proportion of words like awesome, amazing, love, delicious and pretty is high. For 1 star rating the proportion for words like bad and wait is very high.
+The below table shows the number of occurrences of a word in reviews 5 and 1.
+
+
+## Lexicon Dictionaries
+
+We will consider three dictionaries, available through the tidytext package 
+– The combined dictionary of terms denoting different sentiments, 
+- The extended sentiment lexicon developed by Prof Bing Liu, and 
+- The AFINN dictionary which includes words commonly used in user-generated content in the web. 
+
+The first provides lists of words denoting different sentiment (for eg., positive, negative, joy, fear, anticipation, …), the second specifies lists of positive and negative words, while the third gives a list of words with each word being associated with a positivity score from -5 to +5.
+
+The number of matching terms for each dictionary is calculated and depicted using the graph below.
+
+lets just use the dictionary based positive and negative terms to predict sentiment (positive or
+negative based on star rating). One approach for this is: using each dictionary, obtain an
+aggregated positive score and a negative score for each review; for the AFINN dictionary, an
+aggregate positivity score can be obtained for each review.
+
+```{r}
+#How many matching terms are there for each of the dictionaries?
+from_bing_dict <- inner_join(get_sentiments("bing"),rrTokens, by="word")
+from_nrc_dict<- inner_join(get_sentiments("nrc"),rrTokens, by="word")
+from_afin_dict<- inner_join(get_sentiments("afinn"),rrTokens, by="word") 
+
+binn<- nrow(from_bing_dict)
+nrcn <- nrow(from_nrc_dict)
+affn <- nrow(from_afin_dict)
+
+table_terms <- matrix(c(binn,nrcn,affn),ncol=3,byrow=TRUE)
+colnames(table_terms) <- c("Bing","NRC","afin")
+rownames(table_terms) <- c("Number of matching terms")
+table_terms <- as.table(table_terms)
+
+table_terms
+barplot(table_terms, main =" Matching terms in each dictionary")
+```
+
+
+#### Using Bing Dictionary
+
+Sentiment Analysis using the Bing dictionary gave us the words with either positive or negative sentiment. Then we summarized the sentiment words per review. Thereafter a sentiment score was calculated based on the proportion of the positive or negative words. Summarizing the entire analysis against the star ratings gave us the below table:
+
+```{r,results='hide',fig.show='hide'}
+## Dictionary 1 - Bing
+#Analyze Which words contribute to positive/negative sentiment - we can count the occurrences of positive/negative sentiment words in the reviews
+
+xx<-from_bing_dict %>% group_by(word, sentiment) %>% summarise(totOcc=sum(n)) %>% arrange(sentiment, desc(totOcc))
+
+#negate the counts for the negative sentiment words
+xx<- xx %>% mutate (totOcc=ifelse(sentiment=="positive", totOcc, -totOcc))
+
+#the most positive and most negative words
+# ungrouping is important because we have grouped by word and sentiment together in the code above
+xx<-ungroup(xx)   
+
+#top_n(xx, 25) %>% arrange(sentiment, desc(totOcc))
+#top_n(xx, -25)  %>% arrange(sentiment, desc(totOcc))
+orderw <- rbind(top_n(xx, 25), top_n(xx, -25)) %>% mutate(word=reorder(word,totOcc)) 
+
+# Review Sentiment Analysis
+#summarise positive/negative sentiment words per review
+rev_senti_bing <- from_bing_dict %>% group_by(review_id, starsReview) %>% summarise(nwords=n(),posSum=sum(sentiment=='positive'), negSum=sum(sentiment=='negative'))
+```
+
+```{r}
+
+ggplot(orderw,aes(word, totOcc, fill=sentiment)) +geom_col()+coord_flip()
+
+#calculate sentiment score based on proportion of positive, negative words
+rev_senti_bing<- rev_senti_bing %>% mutate(posProp=posSum/nwords, negProp=negSum/nwords)
+rev_senti_bing<- rev_senti_bing %>% mutate(sentiScore=posProp-negProp)
+
+rev_senti_bing %>% group_by(starsReview) %>% summarise(avgPos=mean(posProp), avgNeg=mean(negProp), avgSentiSc=mean(sentiScore))
+
+#considering reviews with 1 & 2 starsReview as negative, and this with 4 & 5 starsReview as positive
+rev_senti_bing <- rev_senti_bing %>% mutate(hiLo=ifelse(starsReview<=2,-1, ifelse(starsReview>=4, 1, 0 )))
+rev_senti_bing <- rev_senti_bing %>% mutate(pred_hiLo=ifelse(sentiScore >0, 1, -1))
+xx_bing <-rev_senti_bing %>% filter(hiLo!=0)
+confusion_matrix_bing <- table(actual=xx_bing$hiLo, predicted=xx_bing$pred_hiLo )
+```
+
+We took only those words which match the BING dictionary. The average positive score in the above table is nothing but the mean of the positive proportion and the average negative score is the mean of the negative proportion. Sentiment score for a single review is the difference between positive and negative proportions. Average sentiment score is the mean of all sentiment scores grouped by the star rating.
+
+```{r,results='hide',fig.show='hide'}
+#calculating the accuracy of the predictions
+confusionMatrix(confusion_matrix_bing)
+```
+
+
+#### Using NRC Dictionary
+
+Sentiment Analysis using NRC gave us several sentiment categories - all the words were grouped into one of these categories. Considering  {anger, disgust, fear, sadness, negative} to denote 'bad' reviews, and {positive, joy, anticipation, trust, surprise} to denote 'good' reviews we got the GoodBad score for each word.
+
+```{r,results='hide',fig.show='hide'}
+## Dictionary 2 - NRC
+senti_nrc<-from_nrc_dict %>% group_by (word, sentiment) %>% summarise(totOcc=sum(n)) %>% arrange(sentiment, desc(totOcc))
+
+#top few words for different sentiments
+senti_nrc %>% group_by(sentiment) %>% arrange(sentiment, desc(totOcc)) %>% top_n(10)
+# we have got total 10 sentiments
+
+#considering  {anger, disgust, fear sadness, negative} to denote 'bad' reviews, and {positive, joy, anticipation, trust,surprise} to denote 'good' reviews
+# Geting the GoodBad score for each word
+xx1<-senti_nrc %>% mutate(goodBad=ifelse(sentiment %in% c('anger', 'disgust', 'fear', 'sadness', 'negative'), -totOcc, ifelse(sentiment %in% c('positive', 'joy', 'anticipation', 'trust','surprise'), totOcc, 0)))
+
+xx1<-ungroup(xx1)
+
+#top_n(xx1, 25)
+#top_n(xx1, -25)
+
+nrcwords <- rbind(top_n(xx1, 25), top_n(xx1, -25)) %>% mutate(word=reorder(word,goodBad)) 
+
+##Analysis by Review 
+rev_senti_nrc <- from_nrc_dict %>% group_by (review_id, starsReview, sentiment) %>% summarise(totOcc=sum(n)) %>% arrange(starsReview, sentiment, desc(totOcc))
+
+## Geting the GoodBad score for each review
+xx2 <-rev_senti_nrc %>% mutate(goodBad=ifelse(sentiment %in% c('anger', 'disgust', 'fear', 'sadness', 'negative'), -totOcc, ifelse(sentiment %in% c('positive', 'joy', 'anticipation', 'trust','surprise'), totOcc, 0)))
+
+xx2 <-ungroup(xx2)
+#top_n(xx2, 25)
+#top_n(xx2, -25)
+
+rev_senti_nrc <- xx2 %>% group_by(review_id, starsReview) %>% summarise(nwords=n(),sentiGoodBad =sum(goodBad))
+```
+
+```{r}
+ggplot(nrcwords,aes(word, goodBad, fill=goodBad)) +geom_col()+coord_flip()
+
+rev_senti_nrc %>% group_by(starsReview)%>%summarise(avgLen=mean(nwords),avgSenti=mean(sentiGoodBad))
+
+#considering reviews with 1 & 2 starsReview as negative, and this with 4 & 5 starsReview as positive
+rev_senti_nrc <- rev_senti_nrc %>% mutate(hiLo=ifelse(starsReview<=2,-1, ifelse(starsReview>=4, 1, 0 )))
+rev_senti_nrc <- rev_senti_nrc %>% mutate(pred_hiLo=ifelse(sentiGoodBad >0, 1, -1))
+
+xx_nrc1 <-rev_senti_nrc %>% filter(hiLo!=0)
+confusion_matrix_nrc <- table(actual=xx_nrc1$hiLo, predicted=xx_nrc1$pred_hiLo )
+```
+
+```{r,results='hide',fig.show='hide'}
+#calculating the accuracy of the predictions using afin dictionary
+#accuracy on training & test data
+confusionMatrix(confusion_matrix_nrc)
+```
+
+
+#### Using AFINN Dictionary
+
+Analysis by Review Sentiment using Affin Dictionary gave the aggregate sentiment score according to to each star rating as follows:
+
+1 star is lower rated and its average sentiment is negative 2.39 whereas 5 star is the highest rating with an average sentiment score of 7.28. It is worth noting that the average length is approximately the same for all ratings, as we would expect. Word length is really not the criteria which impacts the review sentiment. However the aggregated scores help us to predict the review sentiment as we have seen above. Higher scores mean better review sentiment. 
+
+```{r,results='hide',fig.show='hide'}
+# With Dictionary 3 -  Afin - Review Sentiment Analysis
+
+#Analysis by Review Sentiment
+
+rev_senti_afinn <- from_afin_dict %>% group_by(review_id, starsReview) %>% summarise(nwords=n(), sentiSum =sum(value))
+```
+
+```{r}
+
+rev_senti_afinn %>% group_by(starsReview) %>% summarise(avgLen=mean(nwords),avgSenti=mean(sentiSum))
+
+#considering reviews with 1 & 2 starsReview as negative, and this with 4 & 5 starsReview as positive
+rev_senti_afinn <- rev_senti_afinn %>% mutate(hiLo=ifelse(starsReview<=2,-1, ifelse(starsReview>=4, 1, 0 )))
+rev_senti_afinn <- rev_senti_afinn %>% mutate(pred_hiLo=ifelse(sentiSum >0, 1, -1))
+xx<-rev_senti_afinn %>% filter(hiLo!=0)
+confusion_matrix_afin <- table(actual=xx$hiLo, predicted=xx$pred_hiLo )
+```
+
+```{r,results='hide',fig.show='hide'}
+#calculating the accuracy of the predictions using afin dictionary
+#accuracy on training & test data
+confusionMatrix(confusion_matrix_afin)
+```
+
+Below table shows prediction accuracies using different dictionaries:
+
+```{r}
+col1 <- c('BING','NRC','AFINN')
+col2 <- c(83.80,78.54,84.14)
+colna <- c('Dictionary','Accuracy (%)')
+metric_df <- data.frame(cbind(col1,col2))
+names(metric_df) <- colna
+metric_df
+```
+
+
+## Now lets try building some prediction models using each dictionary
+
+I did random sampling and have taken 16,000 sampled data to make run time manageable. Also split the training and test data into 50-50 just to avoid computation power issues. Before building prediction models,
+- I removed reviews with rating 3 (neutral sentiment), since we are building a binary classification model I want to classify reviews as either as positive or negative sentiment.
+
+#### Bing Dictionary 
+
+After Removing Star rating 3 from the data set we have 33597 rows. The table below shows the distribution of bing dictionary's rating for words in our data set. 
+
+8363 words have bing sentiment rating as -1 which means they have Star rating 1,2. Whereas we have 25234 words with bing sentiment rating as 1 which means they have Star rating 4 and 5
+
+```{r,results='hide',fig.show='hide'}
+
+senti_bing_data <- from_bing_dict %>%  pivot_wider(id_cols = c(review_id,starsReview), names_from = word, values_from = tf_idf)  %>% ungroup()
+
+#filter out the reviews with starsReview=3, and calculate hiLo sentiment 'class'
+senti_bing_data <- senti_bing_data %>% filter(starsReview!=3) %>% mutate(hiLo=ifelse(starsReview<=2, -1, 1)) %>% select(-starsReview)
+```
+
+```{r}
+#how many review with 1, -1  'class'
+senti_bing_data %>% group_by(hiLo) %>% tally()
+
+#replace all the NAs with 0
+senti_bing_data<-senti_bing_data %>% replace(., is.na(.), 0)
+
+senti_bing_data$hiLo<- as.factor(senti_bing_data$hiLo)
+
+#Create Dataset of 16,000 records
+set.seed(213)
+senti_bing_data_16k <- senti_bing_data[sample(nrow(senti_bing_data),16000),]
+
+set.seed(213)
+senti_bing_data_16k_split<- initial_split(senti_bing_data_16k, 0.5)
+senti_bing_data_16k_trn<- training(senti_bing_data_16k_split)
+senti_bing_data_16k_tst<- testing(senti_bing_data_16k_split)
+```
+
+```{r}
+## bing - ranger
+rfModel_bing<-ranger(dependent.variable.name = "hiLo", data=senti_bing_data_16k_trn %>% select(-review_id), num.trees = 200, importance='permutation', probability = TRUE)
+
+#Obtain predictions, and calculate performance
+bing_rf_trn_preds<- predict(rfModel_bing, senti_bing_data_16k_trn %>% select(-review_id))$predictions
+bing_rf_tst_preds<- predict(rfModel_bing, senti_bing_data_16k_tst %>% select(-review_id))$predictions
+
+#The optimal threshold from the ROC analyses
+rocTrn <- roc(senti_bing_data_16k_trn$hiLo, bing_rf_trn_preds[,2], levels=c(-1, 1))
+rocTst <- roc(senti_bing_data_16k_tst$hiLo, bing_rf_tst_preds[,2], levels=c(-1, 1))
+
+plot.roc(rocTrn, col='blue', legacy.axes = TRUE)
+plot.roc(rocTst, col='red', add=TRUE)
+legend("bottomright", legend=c("Training", "Test"),
+        col=c("blue", "red"), lwd=2, cex=0.8, bty='n')
+```
+
+```{r,results='hide',fig.show='hide'}
+#Best threshold from ROC analyses
+bThr<-coords(rocTrn, "best", ret="threshold", transpose = FALSE)
+bThr <- as.numeric(bThr)
+bThr
+
+#Confusion Matrix at bThr for Trn and Tst dataset
+confusionMatrix(table(actual=senti_bing_data_16k_trn$hiLo, preds=if_else(bing_rf_trn_preds[,2]>bThr,1,-1)))
+confusionMatrix(table(actual=senti_bing_data_16k_tst$hiLo, preds=if_else(bing_rf_tst_preds[,2]>bThr,1,-1)))
+```
+
+#### NRC Dictionary 
+
+After Removing Star rating 3 from the data set we have 34263 rows. The table below shows the distribution of NRC dictionary's rating for words in our data set. 
+
+8597 words have NRC sentiment rating as -1 which means they have Star rating 1,2. Whereas we have 25666 words with NRC sentiment rating as 1 which means they have Star rating 4 and 5
+
+```{r}
+## nrc
+from_nrc_dict_1 <-from_nrc_dict[,-2]
+from_nrc_dict_1 <-from_nrc_dict_1[!duplicated(from_nrc_dict_1), ]
+
+#create Document Term Matrix
+senti_nrc_data <- from_nrc_dict_1 %>%  pivot_wider(id_cols = c(review_id,starsReview), names_from = word, values_from = tf_idf)  %>% ungroup()
+
+senti_nrc_data <- senti_nrc_data %>% filter(starsReview!=3) %>% mutate(hiLo=ifelse(starsReview<=2, -1, 1)) %>% select(-starsReview)
+senti_nrc_data<-senti_nrc_data %>% replace(., is.na(.), 0)
+senti_nrc_data$hiLo<- as.factor(senti_nrc_data$hiLo)
+senti_nrc_data %>% group_by(hiLo) %>% tally()
+
+set.seed(213)
+senti_nrc_data_16k <- senti_nrc_data[sample(nrow(senti_nrc_data),16000),]
+
+set.seed(213)
+senti_nrc_data_16k_split<- initial_split(senti_nrc_data_16k, 0.5)
+senti_nrc_data_16k_trn<- training(senti_nrc_data_16k_split)
+senti_nrc_data_16k_tst<- testing(senti_nrc_data_16k_split)
+```
+
+```{r}
+## nrc - ranger
+rfModel_nrc<-ranger(dependent.variable.name = "hiLo", data=senti_nrc_data_16k_trn %>% select(-review_id), num.trees = 200, importance='permutation', probability = TRUE)
+
+#Obtain predictions, and calculate performance
+nrc_rf_trn_preds<- predict(rfModel_nrc, senti_nrc_data_16k_trn %>% select(-review_id))$predictions
+nrc_rf_tst_preds<- predict(rfModel_nrc, senti_nrc_data_16k_tst %>% select(-review_id))$predictions
+
+#The optimal threshold from the ROC analyses
+rocTrn <- roc(senti_nrc_data_16k_trn$hiLo, nrc_rf_trn_preds[,2], levels=c(-1, 1))
+rocTst <- roc(senti_nrc_data_16k_tst$hiLo, nrc_rf_tst_preds[,2], levels=c(-1, 1))
+
+plot.roc(rocTrn, col='blue', legacy.axes = TRUE)
+plot.roc(rocTst, col='red', add=TRUE)
+legend("bottomright", legend=c("Training", "Test"),col=c("blue", "red"), lwd=2, cex=0.8, bty='n')
+```
+
+```{r,results='hide',fig.show='hide'}
+#Best threshold from ROC analyses
+bThr<-coords(rocTrn, "best", ret="threshold", transpose = FALSE)
+bThr <- as.numeric(bThr)
+bThr
+
+#Confusion Matrix at bThr for Trn and Tst dataset
+confusionMatrix(table(actual=senti_nrc_data_16k_trn$hiLo, preds=if_else(nrc_rf_trn_preds[,2]>bThr,1,-1)))
+confusionMatrix(table(actual=senti_nrc_data_16k_tst$hiLo, preds=if_else(nrc_rf_tst_preds[,2]>bThr,1,-1)))
+```
+
+#### AFINN Dictionary 
+
+After Removing Star rating 3 from the data set we have 28416 rows. The table below shows the distribution of AFINN dictionary's rating for words in our data set. 
+
+8197 words have bing sentiment rating as -1 which means they have Star rating 1,2. Whereas we have 24704 words with AFINN sentiment rating as 1 which means they have Star rating 4 and 5
+
+```{r}
+##afin
+senti_afin_data <- from_afin_dict %>%  pivot_wider(id_cols = c(review_id,starsReview), names_from = word, values_from = tf_idf)  %>% ungroup()
+
+#filter out the reviews with starsReview=3, and calculate hiLo sentiment 'class'
+senti_afin_data <- senti_afin_data %>% filter(starsReview!=3) %>% mutate(hiLo=ifelse(starsReview<=2, -1, 1)) %>% select(-starsReview)
+
+#how many review with 1, -1  'class'
+senti_afin_data %>% group_by(hiLo) %>% tally()
+
+#replace all the NAs with 0
+senti_afin_data<-senti_afin_data %>% replace(., is.na(.), 0)
+
+senti_afin_data$hiLo<- as.factor(senti_afin_data$hiLo)
+
+#Create Dataset of 16,000 records
+set.seed(213)
+senti_afin_data_16k <- senti_afin_data[sample(nrow(senti_afin_data),16000),]
+
+set.seed(213)
+senti_afin_data_16k_split<- initial_split(senti_afin_data_16k, 0.5)
+senti_afin_data_16k_trn<- training(senti_afin_data_16k_split)
+senti_afin_data_16k_tst<- testing(senti_afin_data_16k_split)
+```
+
+```{r}
+## afin - ranger
+rfModel_afin<-ranger(dependent.variable.name = "hiLo", data=senti_afin_data_16k_trn %>% select(-review_id), num.trees = 200, importance='permutation', probability = TRUE)
+
+#Obtain predictions, and calculate performance
+afin_rf_trn_preds<- predict(rfModel_afin, senti_afin_data_16k_trn %>% select(-review_id))$predictions
+afin_rf_tst_preds<- predict(rfModel_afin, senti_afin_data_16k_tst %>% select(-review_id))$predictions
+
+#The optimal threshold from the ROC analyses
+rocTrn <- roc(senti_afin_data_16k_trn$hiLo, afin_rf_trn_preds[,2], levels=c(-1, 1))
+rocTst <- roc(senti_afin_data_16k_tst$hiLo, afin_rf_tst_preds[,2], levels=c(-1, 1))
+
+plot.roc(rocTrn, col='blue', legacy.axes = TRUE)
+plot.roc(rocTst, col='red', add=TRUE)
+legend("bottomright", legend=c("Training", "Test"),
+        col=c("blue", "red"), lwd=2, cex=0.8, bty='n')
+```
+
+```{r,results='hide',fig.show='hide'}
+#Best threshold from ROC analyses
+bThr<-coords(rocTrn, "best", ret="threshold", transpose = FALSE)
+bThr <- as.numeric(bThr)
+bThr
+
+#Confusion Matrix at bThr for Trn and Tst dataset
+confusionMatrix(table(actual=senti_afin_data_16k_trn$hiLo, preds=if_else(afin_rf_trn_preds[,2]>bThr,1,-1)))
+confusionMatrix(table(actual=senti_afin_data_16k_tst$hiLo, preds=if_else(afin_rf_tst_preds[,2]>bThr,1,-1)))
+```
+
+
+lets merge all the matched words from all three dictionaries into a single combined dictionary. The single combined dictionary matched data set consists of words where each word can have several sentiments from all the dictionaries.
+
+The table below shows the distribution of sentiment rating for the words in our data set. Over 8621 words have rating as -1 which means they have Star rating 1,2. Whereas we have 25798 words with rating as 1 which means they have Star rating 4 and 5.
+
+```{r}
+#Combined Dict.
+names(from_afin_dict)[names(from_afin_dict) == "value"] <- "sentiment"
+
+#Dimensions for matched words from all three dictionaries
+#from_afin_dict %>% dim()
+#from_bing_dict %>% dim()
+#from_nrc_dict %>% dim()
+
+#Converting the sentiment variable in AFINN dictionary to character
+from_afin_dict <- from_afin_dict %>% mutate(sentiment = as.character(sentiment))
+
+#combine matched words from the three dictionaries
+comb_dict <- rbind(from_bing_dict, from_nrc_dict, from_afin_dict)
+
+#comb_dict %>% dim()
+
+#Dimensions for the distinct word tokens in comb_dict
+#comb_dict %>% distinct(word) %>% dim()
+
+#remove duplicates from comb_dict
+comb_dict_1 <-comb_dict[,-2]
+comb_dict_1 <-comb_dict_1[!duplicated(comb_dict_1), ]
+
+#Dimensions for rrSenti_combo 
+#comb_dict_1 %>% dim()
+
+#Dimensions for the distinct word tokens in comb_dict_1
+#comb_dict_1 %>% distinct(word) %>% dim()
+
+#create Document Term Matrix
+senti_comb_data <- comb_dict_1 %>%  pivot_wider(id_cols = c(review_id,starsReview), names_from = word, values_from = tf_idf)  %>% ungroup()
+
+#filter out the reviews with starsReview=3
+#calculate hiLo sentiment(1 is assigned to 4 and 5/-1 is assigned to 1 and 2)
+senti_comb_data <- senti_comb_data %>% filter(starsReview!=3) %>% mutate(hiLo=ifelse(starsReview<=2, -1, 1)) %>% select(-starsReview)
+
+#replace all NAs with zero
+senti_comb_data<-senti_comb_data %>% replace(., is.na(.), 0)
+
+#convert hiLo from num to factor
+senti_comb_data$hiLo<- as.factor(senti_comb_data$hiLo)
+
+#no of reviews with 1, -1 class
+senti_comb_data %>% group_by(hiLo) %>% tally()
+
+set.seed(213)
+senti_comb_data_16k <- senti_comb_data[sample(nrow(senti_comb_data),16000),]
+
+senti_comb_data_16k_split<- initial_split(senti_comb_data_16k, 0.5)
+senti_comb_data_16k_trn  <- training(senti_comb_data_16k_split)
+senti_comb_data_16k_tst  <- testing(senti_comb_data_16k_split)
+```
+
+
+```{r}
+## comb - ranger
+rfModel_comb<-ranger(dependent.variable.name = "hiLo", data=senti_comb_data_16k_trn %>% select(-review_id), num.trees = 200, importance='permutation', probability = TRUE)
+
+#Obtain predictions, and calculate performance
+comb_rf_trn_preds<- predict(rfModel_comb, senti_comb_data_16k_trn %>% select(-review_id))$predictions
+comb_rf_tst_preds<- predict(rfModel_comb, senti_comb_data_16k_tst %>% select(-review_id))$predictions
+
+#The optimal threshold from the ROC analyses
+library(pROC)
+rocTrn <- roc(senti_comb_data_16k_trn$hiLo, comb_rf_trn_preds[,2], levels=c(-1, 1))
+rocTst <- roc(senti_comb_data_16k_tst$hiLo, comb_rf_tst_preds[,2], levels=c(-1, 1))
+
+plot.roc(rocTrn, col='blue', legacy.axes = TRUE)
+plot.roc(rocTst, col='red', add=TRUE)
+legend("bottomright", legend=c("Training", "Test"),col=c("blue", "red"), lwd=2, cex=0.8, bty='n')
+```
+
+
+
+```{r,results='hide',fig.show='hide'}
+#Best threshold from ROC analyses
+bThr<-coords(rocTrn, "best", ret="threshold", transpose = FALSE)
+bThr <- as.numeric(bThr)
+bThr
+
+#Confusion Matrix at bThr for Trn and Tst dataset
+confusionMatrix(table(actual=senti_comb_data_16k_trn$hiLo, preds=if_else(comb_rf_trn_preds[,2]>bThr,1,-1)))
+confusionMatrix(table(actual=senti_comb_data_16k_tst$hiLo, preds=if_else(comb_rf_tst_preds[,2]>bThr,1,-1)))
+```
+
+
+
+```{r}
+col1 <- c('BING','NRC','AFINN','Combined')
+col2 <- c(96.81,98.29,95.55,98.96)
+col3 <- c(87.42,87.60,86.82,89.42)
+colna <- c('Dictionary','Accuracy (%) on training data','Accuracy (%) on Validation data')
+metric_df <- data.frame(cbind(col1,col2,col3))
+names(metric_df) <- colna
+metric_df
+```
+
+
+## Conclusion
+
+From above table, we can see that random forest model with combined dictionary is performing well with an accuracy of 89.42% and when we just used the dictionaries alone to get an aggregated sentiment score AFINN dictionary performed well with approximately 84%
