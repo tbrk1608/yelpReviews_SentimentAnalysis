@@ -1,4 +1,4 @@
-## Yelp Reviws Text Mining and Analysis:
+## Yelp Reviews Text Mining and Analysis:
 
 ### About the Repo ....
 
@@ -6,4 +6,5 @@ This project involves the analyses of text data on users’ review of restaurant
 
 
 To keep the our task manageable, a sample of the original dataset (over 8 million reviews by over a million users for 160K+ businesses) will be used here. The star ratings will be used here to indicate the sentiment label. For binary classification, we will need to convert the 1-5 scale rating values to {positive(1), negative(0)} values.
+
 ---
